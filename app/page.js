@@ -236,7 +236,7 @@ export default function Page() {
 
       <header className="w-full py-10 text-center">
         <h1 className="text-2xl sm:text-3xl md:text-4xl font-semibold">
-          Concrete Polishing Group — Quote Calculator
+          <p>Concrete Polishing Group - <br></br> Quote Calculator</p>
         </h1>
       </header>
 
