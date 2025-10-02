@@ -65,14 +65,23 @@ export default function Page() {
     const roomCount = parseInt(rooms, 10);
     const dist = parseFloat(distanceMiles) || 0;
     const travelH = parseFloat(travelHoursOneWay) || 0;
-    const blocks100 = Math.max(1, ceilDiv(areaM2, 100));
+
+    // Tolerance-aware 100m² blocks (20m² grace over each threshold)
+    function ceilDivWithTolerance(value, blockSize = 100, tolerance = 20) {
+      if (value <= blockSize + tolerance) return 1;
+      return Math.ceil((value - tolerance) / blockSize);
+    }
+
+    const blocks100 = Math.max(1, ceilDivWithTolerance(areaM2, 100, 20));
+    const additionalRooms = Math.max(0, roomCount - 1); // first room included
+
 
     // ==== Labour structure per stage ====
     // Preparation (pouring)
     const prep = {
       stage: "Preparation",
       contractors: 2,
-      days: blocks100 + roomCount, // rooms add days
+      days: blocks100 + additionalRooms, // rooms add days beyond the first
       rate: RATES.prepPerPersonPerDay,
     };
 
@@ -81,7 +90,7 @@ export default function Page() {
     const placement = {
       stage: "Placement & Power Trowel",
       contractors: placementContractors,
-      days: blocks100 + roomCount,
+      days: blocks100 + additionalRooms,
       rate: RATES.placementPerPersonPerDay,
     };
 
@@ -89,7 +98,7 @@ export default function Page() {
     const joint = {
       stage: "Joint Cutting & Cover",
       contractors: 2,
-      days: blocks100 + roomCount,
+      days: blocks100 + additionalRooms,
       rate: RATES.jointCutPerPersonPerDay,
     };
 
@@ -236,7 +245,7 @@ export default function Page() {
 
       <header className="w-full py-10 text-center">
         <h1 className="text-2xl sm:text-3xl md:text-4xl font-semibold">
-          <p>Concrete Polishing Group - <br></br> Quote Calculator</p>
+          Concrete Polishing Group — Quote Calculator
         </h1>
       </header>
 
@@ -417,9 +426,7 @@ export default function Page() {
           </div>
 
           <footer className="text-center text-xs text-neutral-500 mt-6 mb-10">
-            <p>Built for Concrete Polishing Group LTD. <br></br>
-            TradeScale LLC <br></br>2025</p>
-            
+            Built for Next.js + Tailwind. Fully responsive & centered. Sans-serif everything.
           </footer>
         </div>
       </main>
