@@ -12,7 +12,7 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata = {
-  title: "Quote Calcuator",
+  title: "Quote Calculator",
   description: "Internal Quoting Tool for CPG",
 };
 

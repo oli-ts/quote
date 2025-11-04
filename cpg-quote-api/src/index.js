@@ -53,6 +53,7 @@ export default {
         travelHoursOneWay = 0,
         jobType = "",
         finishType, // "power-trowel-seal" | "rustic-style" | "variable-finish" | "exposed-aggregate" | "hydrated"
+        profitPercent,
       } = input;
 
       if (!(areaM2 > 0)) return json({ ok: false, error: "areaM2 must be > 0" }, 400);
@@ -176,13 +177,26 @@ export default {
       const materials = calcMaterials(areaM2, finishType);
       const materialsCost = materials.total;
 
-      // Totals
+      // Totals + Profit
       const logisticsCost = fuelCost + travelLabourCost + parkingCongestionCost;
       const subtotal = labourTotal + accommodationCost + logisticsCost + materialsCost;
 
-      // Profit margin (your code uses 45%)
-      const profitMargin = 0.45;
+      const clampedProfit = Math.min(40, Math.max(5, Number(profitPercent ?? 30)));
+      const profitMargin = clampedProfit / 100;
       const actualTotal = subtotal * (1 + profitMargin);
+      const addProfit = (n) => n * (1 + profitMargin);
+      const withProfit = {
+        initialVisitCost: round(addProfit(initialVisitCost)),
+        labourTotal: round(addProfit(labourTotal)),
+        accommodationCost: round(addProfit(accommodationCost)),
+        logistics: {
+          fuelCost: round(addProfit(fuelCost)),
+          travelLabourCost: round(addProfit(travelLabourCost)),
+          parkingCongestionCost: round(addProfit(parkingCongestionCost)),
+        },
+        materialsCost: round(addProfit(materialsCost)),
+        subtotal: round(addProfit(subtotal)),
+      };
 
       // Response mirrors your page structure
       return json({
@@ -198,6 +212,7 @@ export default {
             isLondon,
             jobType,
             finishType,
+            profitPercent: clampedProfit,
             location,
           },
           stages,
@@ -213,7 +228,8 @@ export default {
             },
             materialsCost: round(materialsCost),
             subtotal: round(subtotal),
-            actualtotal: round(actualTotal),
+            actualTotal: round(actualTotal),
+            withProfit,
           },
         },
       });

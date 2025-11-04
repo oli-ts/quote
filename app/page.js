@@ -15,6 +15,7 @@ export default function Page() {
   const [submitted, setSubmitted] = useState(false);
   const [toastMsg, setToastMsg] = useState("");
   const [quote, setQuote] = useState(null);
+  const [profitPercent, setProfitPercent] = useState(30); // adjustable profit 5–40
 
   // === Configurable rates (EDIT THESE WHEN YOU FLESH OUT PRICING) ===
   const RATES = useMemo(() => ({
@@ -128,6 +129,8 @@ export default function Page() {
     const roomCount = parseInt(rooms, 10);
     const dist = parseFloat(distanceMiles) || 0;
     const travelH = parseFloat(travelHoursOneWay) || 0;
+    const clampedProfit = Math.min(40, Math.max(5, Number(profitPercent) || 0));
+    const profitMargin = clampedProfit / 100;
 
     // Tolerance-aware 100m² blocks (20m² grace over each threshold)
     function ceilDivWithTolerance(value, blockSize = 100, tolerance = 20) {
@@ -245,14 +248,26 @@ export default function Page() {
 
     const logisticsCost = fuelCost + travelLabourCost + parkingCongestionCost;
 
-    const profitMargin = 0.45
-
     const subtotal = labourTotal + accommodationCost + logisticsCost + materialsCost;
 
-    const actualTotal = subtotal * profitMargin + subtotal;
+    const actualTotal = subtotal * (1 + profitMargin);
+
+    const addProfit = (n) => n * (1 + profitMargin);
+    const withProfit = {
+      initialVisitCost: round(addProfit(initialVisitCost)),
+      labourTotal: round(addProfit(labourTotal)),
+      accommodationCost: round(addProfit(accommodationCost)),
+      logistics: {
+        fuelCost: round(addProfit(fuelCost)),
+        travelLabourCost: round(addProfit(travelLabourCost)),
+        parkingCongestionCost: round(addProfit(parkingCongestionCost)),
+      },
+      materialsCost: round(addProfit(materialsCost)),
+      subtotal: round(addProfit(subtotal)),
+    };
 
     return {
-      meta: { areaM2, roomCount, blocks100, distanceMiles: dist, travelHoursOneWay: travelH, needsAccommodation, isLondon, jobType, finishType },
+      meta: { areaM2, roomCount, blocks100, distanceMiles: dist, travelHoursOneWay: travelH, needsAccommodation, isLondon, jobType, finishType, profitPercent: clampedProfit },
       stages: stageLabour,
       materials,
       costs: {
@@ -266,7 +281,9 @@ export default function Page() {
         },
         materialsCost: round(materialsCost),
         subtotal: round(subtotal),
-        actualtotal: round(actualTotal)
+        actualTotal: round(actualTotal)
+        ,
+        withProfit,
       }
     };
   }
@@ -284,6 +301,181 @@ export default function Page() {
     const q = calcQuote();
     setQuote(q);
     setSubmitted(true);
+  }
+
+  function formatGBP(n) {
+    return (Number(n) || 0).toLocaleString("en-GB", { style: "currency", currency: "GBP" });
+  }
+
+  async function handleExportPdf() {
+    if (!quote) return;
+    const { meta, costs } = quote;
+    const wp = costs.withProfit || {};
+    const pm = (Number(meta.profitPercent) || 0) / 100;
+    const addP = (n) => (Number(n) || 0) * (1 + pm);
+    const labourRows = (quote.stages || [])
+      .map((s) => (
+        `<tr>
+          <td>${s.stage}</td>
+          <td class="right">${s.contractors}</td>
+          <td class="right">${s.days}</td>
+          <td class="right">${s.personDays}</td>
+          <td class="right">${formatGBP(s.labourCost)}</td>
+          <td class="right"><strong>${formatGBP(addP(s.labourCost))}</strong></td>
+        </tr>`
+      ))
+      .join("");
+    const materialsRows = (quote.materials?.list || [])
+      .map((m) => (
+        `<tr>
+          <td>${m.name}</td>
+          <td class="right">${formatGBP(m.rate)} / ${m.per || "unit"}</td>
+          <td class="right">${m.qty}</td>
+          <td class="right">${formatGBP(m.cost)}</td>
+          <td class="right"><strong>${formatGBP(addP(m.cost))}</strong></td>
+        </tr>`
+      ))
+      .join("");
+    const logoUrl = `${window.location.origin}/logo.svg`;
+    let logoMarkup = `<img src="${logoUrl}" alt="CPG Logo" />`;
+    try {
+      const res = await fetch(logoUrl, { cache: "no-cache" });
+      if (res.ok) {
+        const svgText = await res.text();
+        if (svgText && svgText.trim().startsWith("<svg")) {
+          logoMarkup = svgText; // inline SVG for crisp print
+        }
+      }
+    } catch (_) { /* fallback to <img> */ }
+    const html = `<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>CPG Quote</title>
+    <style>
+      body { font-family: Arial, sans-serif; padding: 24px; color: #111; background: #fff; }
+      .wrap { max-width: 880px; margin: 0 auto; text-align: center; }
+      h1 { font-size: 22px; margin: 0 0 6px; }
+      h2 { font-size: 16px; margin: 0 0 12px; }
+      .section { margin: 22px 0; }
+      .card { border: 1px solid #ddd; border-radius: 10px; padding: 16px; box-sizing: border-box; }
+      table { width: 100%; border-collapse: separate; border-spacing: 0; margin-top: 8px; border: 1px solid #ddd; border-radius: 10px; overflow: hidden; }
+      th, td { padding: 10px 12px; border-bottom: 1px solid #eee; border-right: 1px solid #eee; text-align: center; }
+      th { background: #fafafa; font-weight: 600; }
+      tr:last-child td { border-bottom: 0; }
+      td:last-child, th:last-child { border-right: 0; }
+      td:first-child, th:first-child { text-align: left; }
+      .right { text-align: right; }
+      .muted { color: #666; font-size: 12px; }
+      .header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; }
+      .brand-left { display: flex; align-items: center; gap: 12px; }
+      .brand-right { text-align: right; }
+      .brand-left img { height: 52px; width: auto; }
+      .brand-left svg { height: 52px; width: auto; }
+      @media print {
+        body { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="wrap">
+      <div class="header">
+        <div class="brand-left">
+          ${logoMarkup}
+        </div>
+        <div class="brand-right">
+          <h1>Quote</h1>
+          <div class="muted">Generated: ${new Date().toLocaleString()}</div>
+        </div>
+      </div>
+    <div class="section card">
+      <h2>Project</h2>
+      <table>
+      <tr><th>Location</th><td>${meta.location || ""}</td></tr>
+      <tr><th>Area</th><td>${meta.areaM2} m²</td></tr>
+      <tr><th>Rooms</th><td>${meta.roomCount}</td></tr>
+      <tr><th>Finish</th><td>${meta.finishType}</td></tr>
+      <tr><th>London?</th><td>${meta.isLondon ? "Yes" : "No"}</td></tr>
+      <tr><th>Distance</th><td>${meta.distanceMiles} miles</td></tr>
+      <tr><th>Travel (one-way)</th><td>${meta.travelHoursOneWay} h</td></tr>
+      <tr><th>Profit</th><td>${meta.profitPercent}%</td></tr>
+      </table>
+    </div>
+    <div class="section card">
+      <h2>Labour (incl. Profit)</h2>
+      <table>
+      <thead>
+        <tr>
+          <th>Stage</th>
+          <th class="right">Contractors</th>
+          <th class="right">Days</th>
+          <th class="right">Person Days</th>
+          <th class="right">Cost excl.</th>
+          <th class="right">Cost incl. profit</th>
+        </tr>
+      </thead>
+      <tbody>
+        ${labourRows}
+      </tbody>
+      </table>
+    </div>
+    <div class="section card">
+      <h2>Materials (incl. Profit)</h2>
+      <table>
+      <thead>
+        <tr>
+          <th>Item</th>
+          <th class="right">Rate</th>
+          <th class="right">Qty</th>
+          <th class="right">Cost excl.</th>
+          <th class="right">Cost incl. profit</th>
+        </tr>
+      </thead>
+      <tbody>
+        ${materialsRows}
+      </tbody>
+      </table>
+    </div>
+    <div class="section card">
+      <h2>Costs (incl. Profit)</h2>
+      <table>
+      <tr><th>Initial Visit</th><td class="right">${formatGBP(wp.initialVisitCost)}</td></tr>
+      <tr><th>Labour Total</th><td class="right">${formatGBP(wp.labourTotal)}</td></tr>
+      <tr><th>Accommodation</th><td class="right">${formatGBP(wp.accommodationCost)}</td></tr>
+      <tr><th>Fuel</th><td class="right">${formatGBP(wp.logistics?.fuelCost)}</td></tr>
+      <tr><th>Travel Labour</th><td class="right">${formatGBP(wp.logistics?.travelLabourCost)}</td></tr>
+      <tr><th>Parking/Congestion</th><td class="right">${formatGBP(wp.logistics?.parkingCongestionCost)}</td></tr>
+      <tr><th>Materials</th><td class="right">${formatGBP(wp.materialsCost)}</td></tr>
+      <tr><th><strong>Total (excl. VAT)</strong></th><td class="right"><strong>${formatGBP(costs.actualTotal)}</strong></td></tr>
+      </table>
+    </div>
+    </div>
+    <script>
+      (function(){
+        function printWhenReady(){
+          const imgs = Array.from(document.images);
+          const svgs = Array.from(document.querySelectorAll('svg'));
+          if (imgs.length === 0 && svgs.length > 0) return window.print();
+          let done = 0;
+          function step(){ if (++done >= imgs.length) window.print(); }
+          imgs.forEach(img => {
+            if (img.complete) step();
+            else {
+              img.addEventListener('load', step, { once: true });
+              img.addEventListener('error', step, { once: true });
+            }
+          });
+        }
+        window.addEventListener('load', printWhenReady);
+      })();
+    </script>
+  </body>
+</html>`;
+    const w = window.open("", "_blank");
+    if (!w) return;
+    w.document.open();
+    w.document.write(html);
+    w.document.close();
   }
 
   return (
@@ -307,6 +499,22 @@ export default function Page() {
         <div className="w-full max-w-3xl">
           <div className="bg-white shadow-sm rounded-2xl p-6 sm:p-8 border border-neutral-200">
             <form onSubmit={handleSubmit} className="grid gap-5" noValidate>
+              {/* Profit Margin control */}
+              <div className="text-center">
+                <label htmlFor="profit" className="block text-sm font-medium mb-2">Profit Margin (%)</label>
+                <select
+                  id="profit"
+                  name="profit"
+                  value={profitPercent}
+                  onChange={(e) => setProfitPercent(Number(e.target.value))}
+                  className="w-full rounded-xl border border-neutral-300 bg-white px-4 py-3 text-center shadow-sm focus:outline-none focus:ring-2 focus:ring-neutral-800"
+                >
+                  {[5,10,15,20,25,30,35,40].map((p) => (
+                    <option key={p} value={p}>{p}%</option>
+                  ))}
+                </select>
+                <div className="text-xs text-neutral-500 mt-1">Applied to each cost line and the total.</div>
+              </div>
               {/* Inputs */}
               <div className="grid sm:grid-cols-2 gap-5">
                 <div className="text-center">
@@ -510,7 +718,17 @@ export default function Page() {
                   </div>
                   <div className="bg-zinc-900 text-white rounded-2xl p-5 text-center">
                     <div className="text-sm text-neutral-200">Subtotal + Profit Margin (excl. VAT)</div>
-                    <div className="text-3xl font-semibold">£{quote.costs.actualtotal.toLocaleString()}</div>
+                    <div className="text-3xl font-semibold">£{quote.costs.actualTotal.toLocaleString()}</div>
+                  </div>
+
+                  <div className="flex justify-center mt-2">
+                    <button
+                      type="button"
+                      onClick={handleExportPdf}
+                      className="px-4 py-2 rounded-xl bg-neutral-900 text-white shadow hover:bg-black"
+                    >
+                      Export PDF
+                    </button>
                   </div>
                 </div>
               </div>
@@ -518,7 +736,7 @@ export default function Page() {
           </div>
 
           <footer className="text-center text-xs text-neutral-500 mt-6 mb-10">
-            Built for Next.js + Tailwind. Fully responsive & centered. Sans-serif everything.
+            Built my TradeScale - For Concrete Polishing Group 2025
           </footer>
         </div>
       </main>
