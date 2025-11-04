@@ -29,6 +29,9 @@ export default function Page() {
     fuelPerMileFactor: 0.76,
     peoplePerVan: 3,
     daysPerWeek: 5,
+    // London charges placeholders (edit when you have real numbers)
+    londonParkingPerVanPerDay: 0,
+    londonCongestionPerVanPerDay: 0,
   }), []);
 
   const jobTypeMap = useMemo(
@@ -60,6 +63,66 @@ export default function Page() {
   function ceilDiv(a, b) { return Math.ceil(a / b); }
   function round(n, dp = 2){ return Math.round((n + Number.EPSILON) * 10**dp) / 10**dp; }
 
+  // === Materials Calculation ===
+  function calcMaterials(areaM2, finishType) {
+    // Standard materials (fixed per m²)
+    const standardRates = {
+      "Perimeter Isolation Foam": 0.5,
+      "Plastic angle trim": 0.25,
+      "Plant Hire": 2,
+      "Reinforcement fibres": 0.5,
+      "Misc Preparation Materials (Glue, Tape, blades, staples, etc)": 2,
+      "Joint cutting blades": 0.5,
+      "Floor Protection (Antinox + TPS)": 1.5,
+    };
+
+    // Variable materials (depend on finish type)
+    const colourSurfaceHardener = {
+      "exposed-aggregate": 12,
+      "variable-finish": 12,
+      "rustic-style": 3,
+      "power-trowel-seal": 2,
+      hydrated: 8,
+    };
+
+    const polishingMaterials = {
+      "exposed-aggregate": 15,
+      "variable-finish": 12,
+      "rustic-style": 8,
+      "power-trowel-seal": 5,
+      hydrated: 12,
+    };
+
+    const std = Object.entries(standardRates).map(([name, rate]) => ({
+      name,
+      rate,
+      per: "m²",
+      qty: areaM2,
+      cost: rate * areaM2,
+    }));
+
+    const variable = [
+      {
+        name: "Colour Surface Hardener",
+        rate: colourSurfaceHardener[finishType] || 0,
+        per: "m²",
+        qty: areaM2,
+        cost: (colourSurfaceHardener[finishType] || 0) * areaM2,
+      },
+      {
+        name: "Polishing Materials, Tooling, Sealer & Consumables",
+        rate: polishingMaterials[finishType] || 0,
+        per: "m²",
+        qty: areaM2,
+        cost: (polishingMaterials[finishType] || 0) * areaM2,
+      },
+    ];
+
+    const list = [...std, ...variable];
+    const total = list.reduce((sum, m) => sum + m.cost, 0);
+    return { list, total };
+  }
+
   function calcQuote() {
     const areaM2 = parseFloat(area);
     const roomCount = parseInt(rooms, 10);
@@ -74,7 +137,6 @@ export default function Page() {
 
     const blocks100 = Math.max(1, ceilDivWithTolerance(areaM2, 100, 20));
     const additionalRooms = Math.max(0, roomCount - 1); // first room included
-
 
     // ==== Labour structure per stage ====
     // Preparation (pouring)
@@ -119,25 +181,12 @@ export default function Page() {
     };
 
     // Detailing (detailing)
-    // Spec says: per 100m² => 2 contractors, 1 day. "These numbers double per extra 100m²".
-    // We'll implement LINEAR scaling by blocks (not exponential). Toggle EXPONENTIAL = true to change behaviour.
-    const EXPONENTIAL = false;
-    let detailContractors = 2;
-    let detailDays = 1;
-    if (EXPONENTIAL) {
-      // doubles per extra 100m²
-      if (blocks100 > 1) {
-        detailContractors = 2 * (2 ** (blocks100 - 1));
-        detailDays = 1 * (2 ** (blocks100 - 1));
-      }
-    } else {
-      // linear scaling
-      detailDays = 1 * blocks100;
-    }
+    const detailContractors = finishType === "power-trowel-seal" ? 0 : 2;
+    const detailDays = finishType === "power-trowel-seal" ? 0 : 1 * blocks100; // linear scaling
     const detailing = {
       stage: "Detailing",
-      contractors: finishType === "power-trowel-seal" ? 0 : detailContractors,
-      days: finishType === "power-trowel-seal" ? 0 : detailDays,
+      contractors: detailContractors,
+      days: detailDays,
       rate: RATES.detailingPerPersonPerDay,
     };
 
@@ -183,22 +232,29 @@ export default function Page() {
       });
     }
 
-    // Parking/Congestion (London only) — PLACEHOLDER: supply your rates to activate
-    const parkingCongestionCost = isLondon ? 0 : 0; // TODO: plug real numbers
+    // Parking/Congestion (London only) – placeholder
+    const londonDays = stageLabour.reduce((sum, s) => sum + s.days, 0);
+    const londonVansAvg = stageLabour.length ? Math.round(stageLabour.reduce((sum, s) => sum + s.vans, 0) / stageLabour.length) : 0;
+    const parkingCongestionCost = isLondon
+      ? (londonDays * londonVansAvg * (RATES.londonParkingPerVanPerDay + RATES.londonCongestionPerVanPerDay))
+      : 0;
 
-    // Materials / Mesh / Concrete depth / Pump hire — PLACEHOLDERS
-    const materialsCost = 0; // TODO
-    const reinforcementMeshCost = 0; // TODO
-    const concreteDepthCost = 0; // TODO
-    const linePumpHireCost = 0; // TODO
+    // === Materials ===
+    const materials = calcMaterials(areaM2, finishType);
+    const materialsCost = materials.total;
 
     const logisticsCost = fuelCost + travelLabourCost + parkingCongestionCost;
 
-    const subtotal = labourTotal + accommodationCost + logisticsCost + materialsCost + reinforcementMeshCost + concreteDepthCost + linePumpHireCost;
+    const profitMargin = 0.45
+
+    const subtotal = labourTotal + accommodationCost + logisticsCost + materialsCost;
+
+    const actualTotal = subtotal * profitMargin + subtotal;
 
     return {
       meta: { areaM2, roomCount, blocks100, distanceMiles: dist, travelHoursOneWay: travelH, needsAccommodation, isLondon, jobType, finishType },
       stages: stageLabour,
+      materials,
       costs: {
         initialVisitCost: round(initialVisitCost),
         labourTotal: round(labourTotal),
@@ -209,10 +265,8 @@ export default function Page() {
           parkingCongestionCost: round(parkingCongestionCost),
         },
         materialsCost: round(materialsCost),
-        reinforcementMeshCost: round(reinforcementMeshCost),
-        concreteDepthCost: round(concreteDepthCost),
-        linePumpHireCost: round(linePumpHireCost),
         subtotal: round(subtotal),
+        actualtotal: round(actualTotal)
       }
     };
   }
@@ -325,7 +379,7 @@ export default function Page() {
               <div className="mt-8">
                 <div className="text-center">
                   <h2 className="text-lg font-semibold">Cost Breakdown</h2>
-                  <p className="mt-2 text-sm text-neutral-600">This is based on the labour/logistics rules you provided. Materials & other line items are placeholders.</p>
+                  <p className="mt-2 text-sm text-neutral-600">Materials now adjust by finish type. London charges are placeholders until you give rates.</p>
                 </div>
 
                 {/* Meta summary */}
@@ -350,6 +404,7 @@ export default function Page() {
 
                 {/* Stage table */}
                 <div className="mt-6">
+                  <h3 className="text-sm font-semibold mb-2 text-center">Labour by Stage</h3>
                   <div className="overflow-x-auto">
                     <table className="w-full text-sm text-center">
                       <thead>
@@ -382,8 +437,41 @@ export default function Page() {
                   </div>
                 </div>
 
+                {/* Materials table */}
+                <div className="mt-8">
+                  <h3 className="text-sm font-semibold mb-2 text-center">Materials</h3>
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-sm text-center">
+                      <thead>
+                        <tr className="text-neutral-600">
+                          <th className="py-2">Item</th>
+                          <th className="py-2">Rate (£/m²)</th>
+                          <th className="py-2">Qty (m²)</th>
+                          <th className="py-2">Cost £</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {quote.materials.list.map((m, i) => (
+                          <tr key={i} className="border-t">
+                            <td className="py-2 text-left px-2">{m.name}</td>
+                            <td className="py-2">£{m.rate.toFixed(2)}</td>
+                            <td className="py-2">{m.qty}</td>
+                            <td className="py-2">£{m.cost.toLocaleString()}</td>
+                          </tr>
+                        ))}
+                        <tr className="border-t font-semibold">
+                          <td className="py-2 text-left px-2">Materials Total</td>
+                          <td></td>
+                          <td></td>
+                          <td className="py-2">£{quote.costs.materialsCost.toLocaleString()}</td>
+                        </tr>
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+
                 {/* Totals */}
-                <div className="mt-6 grid gap-3">
+                <div className="mt-8 grid gap-3">
                   <div className="bg-white border border-neutral-200 rounded-xl p-4">
                     <div className="grid sm:grid-cols-2 gap-3 text-sm">
                       <div className="text-center bg-neutral-50 rounded-lg p-3">
@@ -416,9 +504,13 @@ export default function Page() {
                   </div>
 
                   <div className="bg-neutral-900 text-white rounded-2xl p-5 text-center">
-                    <div className="text-sm text-neutral-200">Subtotal (excl. materials & extras)</div>
+                    <div className="text-sm text-neutral-200">Subtotal (excl. VAT & Profit Margin)</div>
                     <div className="text-3xl font-semibold">£{quote.costs.subtotal.toLocaleString()}</div>
-                    <div className="text-xs mt-1 opacity-70">Materials, mesh, concrete depth, pump hire currently set to £0 — plug your rules to activate.</div>
+                    <div className="text-xs mt-1 opacity-70">Includes labour, accommodation, logistics, and materials. Mesh/concrete depth/pump can be added later.</div>
+                  </div>
+                  <div className="bg-zinc-900 text-white rounded-2xl p-5 text-center">
+                    <div className="text-sm text-neutral-200">Subtotal + Profit Margin (excl. VAT)</div>
+                    <div className="text-3xl font-semibold">£{quote.costs.actualtotal.toLocaleString()}</div>
                   </div>
                 </div>
               </div>
