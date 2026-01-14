@@ -25,6 +25,8 @@ export default {
       const ceilDivWithTolerance = (value, blockSize = 100, tolerance = 20) =>
         value <= blockSize + tolerance ? 1 : Math.ceil((value - tolerance) / blockSize);
 
+      const scaleDays = (rawDays) => (rawDays <= 0 ? 0 : Math.max(1, Math.ceil(rawDays * 0.5)));
+
       // ===== Rates (mirrors your Next page; override via ratesOverride) =====
       const RATES = {
         initialVisitPerPersonPerDay: 350,
@@ -111,10 +113,10 @@ export default {
       const additionalRooms = Math.max(0, rooms - 1);
 
       // Pouring stages
-      const prep = { stage: "Preparation", contractors: 2, days: blocks100 + additionalRooms, rate: RATES.prepPerPersonPerDay };
+      const prep = { stage: "Preparation", contractors: 2, days: scaleDays(blocks100 + additionalRooms), rate: RATES.prepPerPersonPerDay };
       const placementContractors = 4 + (finishType === "hydrated" ? 2 : 0);
-      const placement = { stage: "Placement & Power Trowel", contractors: placementContractors, days: blocks100 + additionalRooms, rate: RATES.placementPerPersonPerDay };
-      const joint = { stage: "Joint Cutting & Cover", contractors: 2, days: blocks100 + additionalRooms, rate: RATES.jointCutPerPersonPerDay };
+      const placement = { stage: "Placement & Power Trowel", contractors: placementContractors, days: scaleDays(blocks100 + additionalRooms), rate: RATES.placementPerPersonPerDay };
+      const joint = { stage: "Joint Cutting & Cover", contractors: 2, days: scaleDays(blocks100 + additionalRooms), rate: RATES.jointCutPerPersonPerDay };
 
       // Polishing + Detailing
       const POLISH_RULES = {
@@ -125,9 +127,10 @@ export default {
         hydrated: { contractors: 3, daysPer100: 4 },
       };
       const pr = POLISH_RULES[finishType] || { contractors: 0, daysPer100: 0 };
-      const polishing = { stage: "Polishing", contractors: pr.contractors, days: pr.daysPer100 * blocks100, rate: RATES.polishingPerPersonPerDay };
+      const polishing = { stage: "Polishing", contractors: pr.contractors, days: scaleDays(pr.daysPer100 * blocks100), rate: RATES.polishingPerPersonPerDay };
       const detailContractors = finishType === "power-trowel-seal" ? 0 : 2;
-      const detailDays = finishType === "power-trowel-seal" ? 0 : 1 * blocks100;
+      const detailDaysRaw = finishType === "power-trowel-seal" ? 0 : 1 * blocks100;
+      const detailDays = scaleDays(detailDaysRaw);
       const detailing = { stage: "Detailing", contractors: detailContractors, days: detailDays, rate: RATES.detailingPerPersonPerDay };
 
       const stagesRaw = [prep, placement, joint, polishing, detailing].filter(s => s.contractors > 0 && s.days > 0);
@@ -229,6 +232,7 @@ export default {
             materialsCost: round(materialsCost),
             subtotal: round(subtotal),
             actualTotal: round(actualTotal),
+            perM2: round(actualTotal / areaM2),
             withProfit,
           },
         },

@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useMemo, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 
 // Save as /app/quote-calculator/page.jsx (Next.js App Router)
 export default function Page() {
@@ -15,6 +15,7 @@ export default function Page() {
   const [submitted, setSubmitted] = useState(false);
   const [toastMsg, setToastMsg] = useState("");
   const [quote, setQuote] = useState(null);
+  const [editableQuote, setEditableQuote] = useState(null);
   const [profitPercent, setProfitPercent] = useState(30); // adjustable profit 5–40
 
   // === Configurable rates (EDIT THESE WHEN YOU FLESH OUT PRICING) ===
@@ -62,7 +63,18 @@ export default function Page() {
   }
 
   function ceilDiv(a, b) { return Math.ceil(a / b); }
+  function scaleDays(rawDays) {
+    if (rawDays <= 0) return 0;
+    return Math.max(1, Math.ceil(rawDays * 0.5));
+  }
   function round(n, dp = 2){ return Math.round((n + Number.EPSILON) * 10**dp) / 10**dp; }
+  function toNumber(value) {
+    const n = parseFloat(value);
+    return Number.isFinite(n) ? n : 0;
+  }
+  function inputNumberValue(n) {
+    return Number.isFinite(n) ? n : "";
+  }
 
   // === Materials Calculation ===
   function calcMaterials(areaM2, finishType) {
@@ -146,7 +158,7 @@ export default function Page() {
     const prep = {
       stage: "Preparation",
       contractors: 2,
-      days: blocks100 + additionalRooms, // rooms add days beyond the first
+      days: scaleDays(blocks100 + additionalRooms), // rooms add days beyond the first
       rate: RATES.prepPerPersonPerDay,
     };
 
@@ -155,7 +167,7 @@ export default function Page() {
     const placement = {
       stage: "Placement & Power Trowel",
       contractors: placementContractors,
-      days: blocks100 + additionalRooms,
+      days: scaleDays(blocks100 + additionalRooms),
       rate: RATES.placementPerPersonPerDay,
     };
 
@@ -163,7 +175,7 @@ export default function Page() {
     const joint = {
       stage: "Joint Cutting & Cover",
       contractors: 2,
-      days: blocks100 + additionalRooms,
+      days: scaleDays(blocks100 + additionalRooms),
       rate: RATES.jointCutPerPersonPerDay,
     };
 
@@ -179,13 +191,14 @@ export default function Page() {
     const polishing = {
       stage: "Polishing",
       contractors: pr.contractors,
-      days: pr.daysPer100 * blocks100, // scale linearly by blocks
+      days: scaleDays(pr.daysPer100 * blocks100), // scale linearly by blocks
       rate: RATES.polishingPerPersonPerDay,
     };
 
     // Detailing (detailing)
     const detailContractors = finishType === "power-trowel-seal" ? 0 : 2;
-    const detailDays = finishType === "power-trowel-seal" ? 0 : 1 * blocks100; // linear scaling
+    const detailDaysRaw = finishType === "power-trowel-seal" ? 0 : 1 * blocks100; // linear scaling
+    const detailDays = scaleDays(detailDaysRaw);
     const detailing = {
       stage: "Detailing",
       contractors: detailContractors,
@@ -288,6 +301,138 @@ export default function Page() {
     };
   }
 
+  function recalculateQuote(raw) {
+    if (!raw) return null;
+    const meta = raw.meta || {};
+    const areaM2 = Number(meta.areaM2) || 0;
+    const dist = Number(meta.distanceMiles) || 0;
+    const travelH = Number(meta.travelHoursOneWay) || 0;
+    const isLondonLocal = !!meta.isLondon;
+
+    const stages = (raw.stages || []).map((s) => {
+      const contractors = Math.max(0, toNumber(s.contractors));
+      const days = Math.max(0, toNumber(s.days));
+      const rate = Math.max(0, toNumber(s.rate));
+      const hasWork = contractors > 0 && days > 0;
+      const personDays = contractors * days;
+      const labourCost = personDays * rate;
+      const weeks = hasWork ? ceilDiv(days, RATES.daysPerWeek) : 0;
+      const vans = hasWork ? Math.max(1, Math.ceil(contractors / RATES.peoplePerVan)) : 0;
+      return { ...s, contractors, days, rate, personDays, labourCost, weeks, vans };
+    });
+
+    const materialsList = (raw.materials?.list || []).map((m) => {
+      const rate = Math.max(0, toNumber(m.rate));
+      const qty = Math.max(0, toNumber(m.qty));
+      const cost = rate * qty;
+      return { ...m, rate, qty, cost };
+    });
+    const materialsTotal = materialsList.reduce((sum, m) => sum + m.cost, 0);
+
+    const initialVisitPeople = 1 + Math.floor(Math.max(0, areaM2 - 1) / 250);
+    const initialVisitCost = initialVisitPeople * RATES.initialVisitPerPersonPerDay;
+
+    const labourTotal = stages.reduce((sum, s) => sum + s.labourCost, 0) + initialVisitCost;
+    const totalPersonDays = stages.reduce((sum, s) => sum + s.personDays, 0);
+    const needsAccommodation = travelH > 1.5;
+    const accommodationCost = needsAccommodation ? totalPersonDays * RATES.accommodationPerPersonPerDay : 0;
+
+    const fuelCost = stages.reduce((sum, s) => sum + (s.vans * dist * s.weeks * RATES.fuelPerMileFactor), 0);
+
+    let travelLabourCost = 0;
+    if (!needsAccommodation) {
+      const perPersonPerDay = 2 * travelH * RATES.travelLabourPerHourPerLeg;
+      stages.forEach(s => { travelLabourCost += s.contractors * s.days * perPersonPerDay; });
+    } else {
+      const legsPerWeek = 2;
+      const perPersonPerWeek = legsPerWeek * travelH * RATES.travelLabourPerHourPerLeg;
+      stages.forEach(s => { travelLabourCost += s.contractors * s.weeks * perPersonPerWeek; });
+    }
+
+    const londonDays = stages.reduce((sum, s) => sum + s.days, 0);
+    const londonVansAvg = stages.length ? Math.round(stages.reduce((sum, s) => sum + s.vans, 0) / stages.length) : 0;
+    const parkingCongestionCost = isLondonLocal
+      ? (londonDays * londonVansAvg * (RATES.londonParkingPerVanPerDay + RATES.londonCongestionPerVanPerDay))
+      : 0;
+
+    const logisticsCost = fuelCost + travelLabourCost + parkingCongestionCost;
+    const subtotal = labourTotal + accommodationCost + logisticsCost + materialsTotal;
+
+    const clampedProfit = Math.min(40, Math.max(5, Number(meta.profitPercent) || 0));
+    const profitMargin = clampedProfit / 100;
+    const actualTotal = subtotal * (1 + profitMargin);
+    const addProfit = (n) => n * (1 + profitMargin);
+    const withProfit = {
+      initialVisitCost: round(addProfit(initialVisitCost)),
+      labourTotal: round(addProfit(labourTotal)),
+      accommodationCost: round(addProfit(accommodationCost)),
+      logistics: {
+        fuelCost: round(addProfit(fuelCost)),
+        travelLabourCost: round(addProfit(travelLabourCost)),
+        parkingCongestionCost: round(addProfit(parkingCongestionCost)),
+      },
+      materialsCost: round(addProfit(materialsTotal)),
+      subtotal: round(addProfit(subtotal)),
+    };
+
+    return {
+      ...raw,
+      meta: { ...meta, needsAccommodation },
+      stages,
+      materials: { ...raw.materials, list: materialsList, total: materialsTotal },
+      costs: {
+        initialVisitCost: round(initialVisitCost),
+        labourTotal: round(labourTotal),
+        accommodationCost: round(accommodationCost),
+        logistics: {
+          fuelCost: round(fuelCost),
+          travelLabourCost: round(travelLabourCost),
+          parkingCongestionCost: round(parkingCongestionCost),
+        },
+        materialsCost: round(materialsTotal),
+        subtotal: round(subtotal),
+        actualTotal: round(actualTotal),
+        perM2: round(actualTotal / (areaM2 || 1)),
+        withProfit,
+      },
+    };
+  }
+
+  const computedQuote = useMemo(
+    () => (editableQuote ? recalculateQuote(editableQuote) : null),
+    [editableQuote]
+  );
+  const displayQuote = computedQuote || quote;
+
+  useEffect(() => {
+    if (quote) setEditableQuote(JSON.parse(JSON.stringify(quote)));
+  }, [quote]);
+
+  const editableStages = editableQuote?.stages || displayQuote?.stages || [];
+  const computedStages = displayQuote?.stages || [];
+  const editableMaterials = editableQuote?.materials?.list || displayQuote?.materials?.list || [];
+  const computedMaterials = displayQuote?.materials?.list || [];
+
+  function updateStageField(index, field, value) {
+    setEditableQuote((prev) => {
+      if (!prev) return prev;
+      const stages = prev.stages.map((s, i) => (
+        i === index ? { ...s, [field]: Math.max(0, toNumber(value)) } : s
+      ));
+      return { ...prev, stages };
+    });
+  }
+
+  function updateMaterialField(index, field, value) {
+    setEditableQuote((prev) => {
+      if (!prev) return prev;
+      const list = (prev.materials?.list || []).map((m, i) => (
+        i === index ? { ...m, [field]: Math.max(0, toNumber(value)) } : m
+      ));
+      return { ...prev, materials: { ...prev.materials, list } };
+    });
+  }
+
   function handleSubmit(e) {
     e.preventDefault();
     const areaN = parseFloat(area);
@@ -308,12 +453,12 @@ export default function Page() {
   }
 
   async function handleExportPdf() {
-    if (!quote) return;
-    const { meta, costs } = quote;
+    if (!displayQuote) return;
+    const { meta, costs } = displayQuote;
     const wp = costs.withProfit || {};
     const pm = (Number(meta.profitPercent) || 0) / 100;
     const addP = (n) => (Number(n) || 0) * (1 + pm);
-    const labourRows = (quote.stages || [])
+    const labourRows = (displayQuote.stages || [])
       .map((s) => (
         `<tr>
           <td>${s.stage}</td>
@@ -325,7 +470,7 @@ export default function Page() {
         </tr>`
       ))
       .join("");
-    const materialsRows = (quote.materials?.list || [])
+    const materialsRows = (displayQuote.materials?.list || [])
       .map((m) => (
         `<tr>
           <td>${m.name}</td>
@@ -446,6 +591,7 @@ export default function Page() {
       <tr><th>Travel Labour</th><td class="right">${formatGBP(wp.logistics?.travelLabourCost)}</td></tr>
       <tr><th>Parking/Congestion</th><td class="right">${formatGBP(wp.logistics?.parkingCongestionCost)}</td></tr>
       <tr><th>Materials</th><td class="right">${formatGBP(wp.materialsCost)}</td></tr>
+      <tr><th>Per m² (Subtotal + Profit)</th><td class="right">${formatGBP(costs.actualTotal / (meta.areaM2 || 1))} / m²</td></tr>
       <tr><th><strong>Total (excl. VAT)</strong></th><td class="right"><strong>${formatGBP(costs.actualTotal)}</strong></td></tr>
       </table>
     </div>
@@ -491,7 +637,7 @@ export default function Page() {
 
       <header className="w-full py-10 text-center">
         <h1 className="text-2xl sm:text-3xl md:text-4xl font-semibold">
-          Concrete Polishing Group — Quote Calculator
+          Concrete Polishing Group - Quote Calculator
         </h1>
       </header>
 
@@ -583,7 +729,7 @@ export default function Page() {
             </form>
 
             {/* Output / Breakdown */}
-            {submitted && quote && (
+            {submitted && displayQuote && (
               <div className="mt-8">
                 <div className="text-center">
                   <h2 className="text-lg font-semibold">Cost Breakdown</h2>
@@ -594,19 +740,19 @@ export default function Page() {
                 <div className="mt-4 grid sm:grid-cols-2 gap-3">
                   <div className="bg-neutral-50 border border-neutral-200 rounded-xl p-3 text-center">
                     <div className="text-xs text-neutral-500">Area</div>
-                    <div className="text-base font-medium">{quote.meta.areaM2} m² ({quote.meta.blocks100} × 100m² blocks)</div>
+                    <div className="text-base font-medium">{displayQuote.meta.areaM2} m² ({displayQuote.meta.blocks100} × 100m² blocks)</div>
                   </div>
                   <div className="bg-neutral-50 border border-neutral-200 rounded-xl p-3 text-center">
                     <div className="text-xs text-neutral-500">Rooms</div>
-                    <div className="text-base font-medium">{quote.meta.roomCount}</div>
+                    <div className="text-base font-medium">{displayQuote.meta.roomCount}</div>
                   </div>
                   <div className="bg-neutral-50 border border-neutral-200 rounded-xl p-3 text-center">
                     <div className="text-xs text-neutral-500">Finish</div>
-                    <div className="text-base font-medium">{finishTypeMap[quote.meta.finishType]}</div>
+                    <div className="text-base font-medium">{finishTypeMap[displayQuote.meta.finishType]}</div>
                   </div>
                   <div className="bg-neutral-50 border border-neutral-200 rounded-xl p-3 text-center">
                     <div className="text-xs text-neutral-500">Distance / Travel</div>
-                    <div className="text-base font-medium">{quote.meta.distanceMiles} mi, {quote.meta.travelHoursOneWay} h one-way</div>
+                    <div className="text-base font-medium">{displayQuote.meta.distanceMiles} mi, {displayQuote.meta.travelHoursOneWay} h one-way</div>
                   </div>
                 </div>
 
@@ -627,19 +773,49 @@ export default function Page() {
                           <th className="py-2">Weeks</th>
                         </tr>
                       </thead>
-                      <tbody>
-                        {quote.stages.map((s, i) => (
-                          <tr key={i} className="border-t">
-                            <td className="py-2">{s.stage}</td>
-                            <td className="py-2">{s.contractors}</td>
-                            <td className="py-2">{s.days}</td>
-                            <td className="py-2">{s.personDays}</td>
-                            <td className="py-2">£{s.rate}</td>
-                            <td className="py-2">£{s.labourCost.toLocaleString()}</td>
-                            <td className="py-2">{s.vans}</td>
-                            <td className="py-2">{s.weeks}</td>
-                          </tr>
-                        ))}
+                                            <tbody>
+                        {editableStages.map((s, i) => {
+                          const computed = computedStages[i] || s;
+                          return (
+                            <tr key={i} className="border-t">
+                              <td className="py-2">{s.stage}</td>
+                              <td className="py-2">
+                                <input
+                                  type="number"
+                                  min="0"
+                                  step="1"
+                                  value={inputNumberValue(s.contractors)}
+                                  onChange={(e) => updateStageField(i, "contractors", e.target.value)}
+                                  className="w-20 rounded-md border border-neutral-300 px-2 py-1 text-center"
+                                />
+                              </td>
+                              <td className="py-2">
+                                <input
+                                  type="number"
+                                  min="0"
+                                  step="0.5"
+                                  value={inputNumberValue(s.days)}
+                                  onChange={(e) => updateStageField(i, "days", e.target.value)}
+                                  className="w-20 rounded-md border border-neutral-300 px-2 py-1 text-center"
+                                />
+                              </td>
+                              <td className="py-2">{round(computed.personDays)}</td>
+                              <td className="py-2">
+                                <input
+                                  type="number"
+                                  min="0"
+                                  step="0.01"
+                                  value={inputNumberValue(s.rate)}
+                                  onChange={(e) => updateStageField(i, "rate", e.target.value)}
+                                  className="w-24 rounded-md border border-neutral-300 px-2 py-1 text-center"
+                                />
+                              </td>
+                              <td className="py-2">£{round(computed.labourCost).toLocaleString()}</td>
+                              <td className="py-2">{computed.vans}</td>
+                              <td className="py-2">{computed.weeks}</td>
+                            </tr>
+                          );
+                        })}
                       </tbody>
                     </table>
                   </div>
@@ -658,20 +834,41 @@ export default function Page() {
                           <th className="py-2">Cost £</th>
                         </tr>
                       </thead>
-                      <tbody>
-                        {quote.materials.list.map((m, i) => (
-                          <tr key={i} className="border-t">
-                            <td className="py-2 text-left px-2">{m.name}</td>
-                            <td className="py-2">£{m.rate.toFixed(2)}</td>
-                            <td className="py-2">{m.qty}</td>
-                            <td className="py-2">£{m.cost.toLocaleString()}</td>
-                          </tr>
-                        ))}
+                                            <tbody>
+                        {editableMaterials.map((m, i) => {
+                          const computed = computedMaterials[i] || m;
+                          return (
+                            <tr key={i} className="border-t">
+                              <td className="py-2 text-left px-2">{m.name}</td>
+                              <td className="py-2">
+                                <input
+                                  type="number"
+                                  min="0"
+                                  step="0.01"
+                                  value={inputNumberValue(m.rate)}
+                                  onChange={(e) => updateMaterialField(i, "rate", e.target.value)}
+                                  className="w-24 rounded-md border border-neutral-300 px-2 py-1 text-center"
+                                />
+                              </td>
+                              <td className="py-2">
+                                <input
+                                  type="number"
+                                  min="0"
+                                  step="0.01"
+                                  value={inputNumberValue(m.qty)}
+                                  onChange={(e) => updateMaterialField(i, "qty", e.target.value)}
+                                  className="w-24 rounded-md border border-neutral-300 px-2 py-1 text-center"
+                                />
+                              </td>
+                              <td className="py-2">£{round(computed.cost).toLocaleString()}</td>
+                            </tr>
+                          );
+                        })}
                         <tr className="border-t font-semibold">
                           <td className="py-2 text-left px-2">Materials Total</td>
                           <td></td>
                           <td></td>
-                          <td className="py-2">£{quote.costs.materialsCost.toLocaleString()}</td>
+                          <td className="py-2">£{displayQuote.costs.materialsCost.toLocaleString()}</td>
                         </tr>
                       </tbody>
                     </table>
@@ -684,28 +881,28 @@ export default function Page() {
                     <div className="grid sm:grid-cols-2 gap-3 text-sm">
                       <div className="text-center bg-neutral-50 rounded-lg p-3">
                         <div className="text-neutral-600">Initial Visit</div>
-                        <div className="text-lg font-semibold">£{quote.costs.initialVisitCost.toLocaleString()}</div>
+                        <div className="text-lg font-semibold">£{displayQuote.costs.initialVisitCost.toLocaleString()}</div>
                       </div>
                       <div className="text-center bg-neutral-50 rounded-lg p-3">
                         <div className="text-neutral-600">Labour Total</div>
-                        <div className="text-lg font-semibold">£{quote.costs.labourTotal.toLocaleString()}</div>
+                        <div className="text-lg font-semibold">£{displayQuote.costs.labourTotal.toLocaleString()}</div>
                       </div>
                       <div className="text-center bg-neutral-50 rounded-lg p-3">
                         <div className="text-neutral-600">Accommodation</div>
-                        <div className="text-lg font-semibold">£{quote.costs.accommodationCost.toLocaleString()} {quote.meta.needsAccommodation ? "(applied)" : "(n/a)"}</div>
+                        <div className="text-lg font-semibold">£{displayQuote.costs.accommodationCost.toLocaleString()} {displayQuote.meta.needsAccommodation ? "(applied)" : "(n/a)"}</div>
                       </div>
                       <div className="text-center bg-neutral-50 rounded-lg p-3">
                         <div className="text-neutral-600">Fuel</div>
-                        <div className="text-lg font-semibold">£{quote.costs.logistics.fuelCost.toLocaleString()}</div>
+                        <div className="text-lg font-semibold">£{displayQuote.costs.logistics.fuelCost.toLocaleString()}</div>
                       </div>
                       <div className="text-center bg-neutral-50 rounded-lg p-3">
                         <div className="text-neutral-600">Travel Labour</div>
-                        <div className="text-lg font-semibold">£{quote.costs.logistics.travelLabourCost.toLocaleString()}</div>
+                        <div className="text-lg font-semibold">£{displayQuote.costs.logistics.travelLabourCost.toLocaleString()}</div>
                       </div>
-                      {isLondon && (
+                      {displayQuote.meta.isLondon && (
                         <div className="text-center bg-neutral-50 rounded-lg p-3">
                           <div className="text-neutral-600">Parking/Congestion</div>
-                          <div className="text-lg font-semibold">£{quote.costs.logistics.parkingCongestionCost.toLocaleString()} (placeholder)</div>
+                          <div className="text-lg font-semibold">£{displayQuote.costs.logistics.parkingCongestionCost.toLocaleString()} (placeholder)</div>
                         </div>
                       )}
                     </div>
@@ -713,12 +910,17 @@ export default function Page() {
 
                   <div className="bg-neutral-900 text-white rounded-2xl p-5 text-center">
                     <div className="text-sm text-neutral-200">Subtotal (excl. VAT & Profit Margin)</div>
-                    <div className="text-3xl font-semibold">£{quote.costs.subtotal.toLocaleString()}</div>
+                    <div className="text-3xl font-semibold">£{displayQuote.costs.subtotal.toLocaleString()}</div>
                     <div className="text-xs mt-1 opacity-70">Includes labour, accommodation, logistics, and materials. Mesh/concrete depth/pump can be added later.</div>
                   </div>
-                  <div className="bg-zinc-900 text-white rounded-2xl p-5 text-center">
+                  <div className="bg-neutral-900 text-white rounded-2xl p-5 text-center">
                     <div className="text-sm text-neutral-200">Subtotal + Profit Margin (excl. VAT)</div>
-                    <div className="text-3xl font-semibold">£{quote.costs.actualTotal.toLocaleString()}</div>
+                    <div className="text-3xl font-semibold">£{displayQuote.costs.actualTotal.toLocaleString()}</div>
+                  </div>
+                  <div className="bg-zinc-900 text-white rounded-2xl p-5 text-center">
+                    <div className="text-sm text-neutral-200">Per m² (Subtotal + Profit)</div>
+                    <div className="text-2xl font-semibold">{formatGBP(displayQuote.costs.actualTotal / (displayQuote.meta.areaM2 || 1))} / m²</div>
+                  </div>
                   </div>
 
                   <div className="flex justify-center mt-2">
@@ -731,7 +933,7 @@ export default function Page() {
                     </button>
                   </div>
                 </div>
-              </div>
+         
             )}
           </div>
 
